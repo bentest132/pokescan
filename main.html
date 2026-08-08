@@ -165,6 +165,12 @@
   .result-item .ri-name{ font-weight:700; font-size:14.5px; }
   .result-item .ri-set{ font-size:12px; color:var(--muted); margin-top:1px; }
   .result-item .ri-arrow{ margin-left:auto; color:var(--muted); font-size:18px; }
+  .result-item .ri-match{
+    font-size:10.5px; font-weight:800; padding:2px 7px; border-radius:100px; margin-left:6px;
+    background: rgba(94,234,212,0.14); color:var(--cyan); border:1px solid rgba(94,234,212,0.3); white-space:nowrap;
+  }
+  .result-item .ri-match.best{ background: rgba(251,191,36,0.16); color:var(--gold); border-color: rgba(251,191,36,0.35); }
+  .results-note{ font-size:11.5px; color:var(--muted); margin-bottom:8px; display:flex; align-items:center; gap:6px; }
 
   /* Detail */
   .detail-top{ display:flex; gap:14px; }
@@ -308,12 +314,14 @@
 
 <canvas id="canvas"></canvas>
 <canvas id="workCanvas"></canvas>
+<canvas id="hashCanvas"></canvas>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script>
 (function(){
   const $ = (id) => document.getElementById(id);
   const video = $('video'), canvas = $('canvas'), captured = $('captured'), workCanvas = $('workCanvas');
+  const hashCanvas = $('hashCanvas');
   const placeholder = $('placeholder'), frameGuide = $('frameGuide'), scanline = $('scanline'), cropBox = $('cropBox');
   const btnCamera = $('btnCamera'), btnCapture = $('btnCapture'), btnReread = $('btnReread'), rereadRow = $('rereadRow');
   const statusEl = $('status'), ocrDebug = $('ocrDebug');
@@ -326,6 +334,8 @@
   let stream = null;
   let ocrWorker = null;
   let ocrReady = false;
+  let capturedCardHash = null; // perceptual hash (dHash, 64-bit as bit array) of the scanned card
+  let visualMatchToken = 0; // cancels stale scoring passes when a new capture/search happens
 
   closeBanner.onclick = () => installBanner.classList.add('hidden');
 
@@ -401,6 +411,7 @@
   // ---------- CAPTURE ----------
   btnCapture.onclick = async () => {
     if(!stream) return;
+    visualMatchToken++; // cancel any visual scoring pass from a previous capture
     const w = video.videoWidth, h = video.videoHeight;
     canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d');
@@ -414,6 +425,11 @@
     rereadRow.classList.remove('hidden');
     posSlider.value = 4; heightSlider.value = 16;
     updateCropBoxUI();
+
+    // Full-card crop (matches the dashed frame guide) used for visual matching
+    const fx = Math.round(w * 0.08), fy = Math.round(h * 0.08);
+    const fw = Math.round(w * 0.84), fh = Math.round(h * 0.84);
+    capturedCardHash = imageDataToHash(cropToImageData(canvas, fx, fy, fw, fh));
 
     await runOcrOnCurrentCrop();
   };
@@ -496,6 +512,89 @@
     }
   }
 
+  // ---------- VISUAL MATCHING (perceptual hash) ----------
+  function cropToImageData(sourceCanvas, x, y, w, h){
+    // Resize down to a small fixed grid (9x8) for a dHash — this is deliberately tiny,
+    // we only need coarse shape/color-block info, not detail.
+    hashCanvas.width = 9; hashCanvas.height = 8;
+    const hctx = hashCanvas.getContext('2d');
+    hctx.imageSmoothingEnabled = true;
+    hctx.drawImage(sourceCanvas, x, y, w, h, 0, 0, 9, 8);
+    return hctx.getImageData(0, 0, 9, 8);
+  }
+
+  function imageDataToHash(imageData){
+    const d = imageData.data;
+    const gray = [];
+    for(let i=0; i<d.length; i+=4){
+      gray.push(0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2]);
+    }
+    // 9x8 grid -> 8x8 horizontal-gradient bits = 64-bit dHash
+    const bits = [];
+    for(let row=0; row<8; row++){
+      for(let col=0; col<8; col++){
+        const left = gray[row*9 + col];
+        const right = gray[row*9 + col + 1];
+        bits.push(left > right ? 1 : 0);
+      }
+    }
+    return bits;
+  }
+
+  function hammingDistance(a, b){
+    if(!a || !b || a.length !== b.length) return Infinity;
+    let d = 0;
+    for(let i=0;i<a.length;i++){ if(a[i] !== b[i]) d++; }
+    return d;
+  }
+
+  function loadImageForHash(url){
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = url;
+      setTimeout(() => reject(new Error('timeout')), 6000);
+    });
+  }
+
+  // Re-scores and re-orders the currently rendered result list by visual similarity
+  // to the scanned card. Degrades silently (leaves original order) if images can't
+  // be read for hashing (e.g. CDN doesn't allow cross-origin pixel access).
+  async function rankResultsByVisualSimilarity(cards){
+    if(!capturedCardHash || !cards || cards.length < 2) return;
+    const myToken = ++visualMatchToken;
+    const notesEl = document.getElementById('resultsNote');
+    if(notesEl) notesEl.textContent = 'Comparaison visuelle avec ta photo…';
+
+    const scored = await Promise.all(cards.map(async (c) => {
+      try{
+        if(!c.image) return { card: c, dist: null };
+        const img = await loadImageForHash(`${c.image}/low.webp`);
+        const off = document.createElement('canvas');
+        off.width = img.naturalWidth || img.width;
+        off.height = img.naturalHeight || img.height;
+        off.getContext('2d').drawImage(img, 0, 0);
+        const hash = imageDataToHash(cropToImageData(off, 0, 0, off.width, off.height));
+        return { card: c, dist: hammingDistance(capturedCardHash, hash) };
+      }catch(e){
+        return { card: c, dist: null }; // unreadable (CORS or load failure) — keep neutral
+      }
+    }));
+
+    if(myToken !== visualMatchToken) return; // a newer scan/search superseded this pass
+
+    const anyScored = scored.some(s => s.dist !== null);
+    if(!anyScored){
+      if(notesEl) notesEl.textContent = '';
+      return;
+    }
+    scored.sort((a,b) => (a.dist ?? 999) - (b.dist ?? 999));
+    if(notesEl) notesEl.textContent = '📷 Classé par ressemblance avec ta photo';
+    renderResults(scored.map(s=>s.card), null, scored);
+  }
+
   // ---------- MANUAL SEARCH ----------
   btnSearch.onclick = () => runSearch(searchInput.value.trim());
   searchInput.addEventListener('keydown', (e) => { if(e.key === 'Enter') runSearch(searchInput.value.trim()); });
@@ -509,6 +608,7 @@
     try{
       const cards = await searchTcgdex(query);
       renderResults(cards, query);
+      if(cards && cards.length > 1) rankResultsByVisualSimilarity(cards);
     }catch(err){
       resultsLabel.textContent = 'Résultats';
       resultsEl.innerHTML = `<div class="empty">Impossible de contacter TCGdex pour l'instant. Réessaie dans un instant.</div>`;
@@ -535,22 +635,39 @@
     return cards;
   }
 
-  function renderResults(cards, query){
+  function renderResults(cards, query, scored){
     if(!cards || !cards.length){
       resultsLabel.textContent = 'Résultats';
-      resultsEl.innerHTML = `<div class="empty">Aucune carte trouvée pour "${escapeHtml(query)}". Essaie un nom plus court ou vérifie l'orthographe.</div>`;
+      resultsEl.innerHTML = `<div class="empty">Aucune carte trouvée${query ? ' pour "'+escapeHtml(query)+'"' : ''}. Essaie un nom plus court ou vérifie l'orthographe.</div>`;
       return;
     }
     resultsLabel.textContent = `${cards.length} résultat${cards.length>1?'s':''}`;
-    resultsEl.innerHTML = '';
-    cards.forEach(c => {
+    const showNote = !!scored;
+    resultsEl.innerHTML = (showNote ? `<div class="results-note" id="resultsNote">📷 Classé par ressemblance avec ta photo</div>` : `<div class="results-note" id="resultsNote"></div>`);
+
+    let bestDist = null;
+    if(scored){
+      const withDist = scored.filter(s => s.dist !== null).map(s=>s.dist);
+      if(withDist.length) bestDist = Math.min(...withDist);
+    }
+
+    cards.forEach((c, idx) => {
       const img = c.image ? `${c.image}/low.webp` : '';
       const div = document.createElement('div');
       div.className = 'result-item';
+      let matchBadge = '';
+      if(scored){
+        const dist = scored[idx] ? scored[idx].dist : null;
+        if(dist !== null){
+          const pct = Math.max(0, Math.round((1 - dist/64) * 100));
+          const isBest = dist === bestDist;
+          matchBadge = `<span class="ri-match${isBest?' best':''}">${isBest?'✓ ':''}${pct}%</span>`;
+        }
+      }
       div.innerHTML = `
         <img src="${img}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
         <div>
-          <div class="ri-name">${escapeHtml(c.name || '—')}</div>
+          <div class="ri-name">${escapeHtml(c.name || '—')}${matchBadge}</div>
           <div class="ri-set">${escapeHtml(c.id || '')}</div>
         </div>
         <div class="ri-arrow">›</div>`;
