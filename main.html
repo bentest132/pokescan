@@ -89,6 +89,20 @@
   .scanline.active{ animation: scan 1.4s linear infinite; opacity:1; }
   @keyframes scan{ 0%{ top:6%; } 100%{ top:94%; } }
 
+  /* Crop selection overlay on captured image */
+  .crop-box{
+    position:absolute; left:4%; right:4%;
+    border:2px solid var(--gold);
+    background: rgba(251,191,36,0.10);
+    border-radius:6px;
+    pointer-events:none;
+    box-shadow: 0 0 0 2000px rgba(6,7,13,0.55);
+  }
+  .crop-box .tag{
+    position:absolute; top:-22px; left:0; font-size:10.5px; font-weight:800;
+    color:#0D0E17; background:var(--gold); padding:2px 7px; border-radius:6px;
+  }
+
   .controls{display:flex; gap:10px; margin-top:12px;}
   button{
     font-family:inherit; font-weight:700; font-size:14.5px;
@@ -103,6 +117,17 @@
   button:disabled{ opacity:0.45; pointer-events:none; }
   button svg{width:16px; height:16px;}
 
+  /* Adjust sliders shown after capture */
+  .adjust{ margin-top:12px; display:none; }
+  .adjust.show{ display:block; }
+  .adjust-row{ display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+  .adjust-row .al{ font-size:11.5px; color:var(--muted); font-weight:700; width:76px; flex:none; }
+  input[type=range]{ flex:1; -webkit-appearance:none; height:4px; background:var(--panel-2); border-radius:4px; outline:none; }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; width:18px; height:18px; border-radius:50%; background:var(--gold);
+    border:2px solid var(--ink); margin-top:-1px;
+  }
+
   .status{
     font-size:12.5px; color:var(--muted); margin-top:10px; min-height:16px;
     display:flex; align-items:center; gap:8px;
@@ -110,6 +135,13 @@
   .dot{width:6px; height:6px; border-radius:50%; background:var(--cyan); flex:none;}
   .dot.busy{ animation: pulse 1s ease-in-out infinite; }
   @keyframes pulse{ 0%,100%{opacity:0.3;} 50%{opacity:1;} }
+
+  .ocr-debug{
+    margin-top:10px; padding:9px 12px; border-radius:10px; background:var(--panel-2);
+    border:1px solid var(--line); font-size:12.5px; display:none;
+  }
+  .ocr-debug.show{ display:block; }
+  .ocr-debug b{ color: var(--gold); }
 
   /* Search */
   .search-row{ display:flex; gap:8px; }
@@ -219,8 +251,21 @@
       <video id="video" playsinline muted class="hidden"></video>
       <img id="captured" class="captured hidden">
       <div class="frame-guide hidden" id="frameGuide"></div>
+      <div class="crop-box hidden" id="cropBox"><span class="tag">Zone lue</span></div>
       <div class="scanline" id="scanline"></div>
     </div>
+
+    <div class="adjust" id="adjustPanel">
+      <div class="adjust-row">
+        <span class="al">Position</span>
+        <input type="range" id="posSlider" min="0" max="80" value="4">
+      </div>
+      <div class="adjust-row">
+        <span class="al">Hauteur</span>
+        <input type="range" id="heightSlider" min="8" max="45" value="16">
+      </div>
+    </div>
+
     <div class="controls">
       <button class="btn-ghost" id="btnCamera">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3.2"/></svg>
@@ -231,7 +276,11 @@
         Scanner
       </button>
     </div>
+    <div class="controls hidden" id="rereadRow">
+      <button class="btn-secondary" id="btnReread">🔁 Relire le texte avec ce cadrage</button>
+    </div>
     <div class="status" id="status"></div>
+    <div class="ocr-debug" id="ocrDebug"></div>
   </div>
 
   <!-- SEARCH -->
@@ -258,22 +307,25 @@
 </div>
 
 <canvas id="canvas"></canvas>
+<canvas id="workCanvas"></canvas>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script>
 (function(){
   const $ = (id) => document.getElementById(id);
-  const video = $('video'), canvas = $('canvas'), captured = $('captured');
-  const placeholder = $('placeholder'), frameGuide = $('frameGuide'), scanline = $('scanline');
-  const btnCamera = $('btnCamera'), btnCapture = $('btnCapture');
-  const statusEl = $('status');
+  const video = $('video'), canvas = $('canvas'), captured = $('captured'), workCanvas = $('workCanvas');
+  const placeholder = $('placeholder'), frameGuide = $('frameGuide'), scanline = $('scanline'), cropBox = $('cropBox');
+  const btnCamera = $('btnCamera'), btnCapture = $('btnCapture'), btnReread = $('btnReread'), rereadRow = $('rereadRow');
+  const statusEl = $('status'), ocrDebug = $('ocrDebug');
   const resultsCard = $('resultsCard'), resultsEl = $('results'), resultsLabel = $('resultsLabel');
   const detailCard = $('detailCard');
   const searchInput = $('searchInput'), btnSearch = $('btnSearch');
   const installBanner = $('installBanner'), closeBanner = $('closeBanner');
+  const adjustPanel = $('adjustPanel'), posSlider = $('posSlider'), heightSlider = $('heightSlider');
 
   let stream = null;
   let ocrWorker = null;
+  let ocrReady = false;
 
   closeBanner.onclick = () => installBanner.classList.add('hidden');
 
@@ -282,24 +334,55 @@
     statusEl.innerHTML = `<span class="dot${busy?' busy':''}"></span><span>${text}</span>`;
   }
 
+  function setDebug(text){
+    if(!text){ ocrDebug.classList.remove('show'); ocrDebug.innerHTML=''; return; }
+    ocrDebug.classList.add('show');
+    ocrDebug.innerHTML = `<b>Texte lu :</b> ${escapeHtml(text)}`;
+  }
+
+  // Preload the OCR worker in the background as soon as the page opens
+  async function initOcr(){
+    try{
+      ocrWorker = await Tesseract.createWorker(['fra','eng']);
+      await ocrWorker.setParameters({
+        tessedit_pageseg_mode: '7', // single text line
+        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÀÂÄÉÈÊËÏÎÔÖÙÛÜÇàâäéèêëïîôöùûüç0123456789 -'."
+      });
+      ocrReady = true;
+    }catch(e){ /* silent, will retry lazily on capture */ }
+  }
+  initOcr();
+
+  function updateCropBoxUI(){
+    const pos = posSlider.value, h = heightSlider.value;
+    cropBox.style.top = pos + '%';
+    cropBox.style.height = h + '%';
+  }
+  posSlider.addEventListener('input', updateCropBoxUI);
+  heightSlider.addEventListener('input', updateCropBoxUI);
+
   // ---------- CAMERA ----------
   btnCamera.onclick = async () => {
     if(stream){ stopCamera(); return; }
     try{
       setStatus('Ouverture de la caméra…', true);
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' }, width:{ideal:1280}, height:{ideal:1280} },
+        video: { facingMode: { ideal: 'environment' }, width:{ideal:1920}, height:{ideal:1920} },
         audio:false
       });
       video.srcObject = stream;
       await video.play();
       placeholder.classList.add('hidden');
       captured.classList.add('hidden');
+      cropBox.classList.add('hidden');
+      adjustPanel.classList.remove('show');
+      rereadRow.classList.add('hidden');
       video.classList.remove('hidden');
       frameGuide.classList.remove('hidden');
       btnCamera.textContent = '⨯ Fermer';
       btnCapture.disabled = false;
       setStatus('Cadre la carte, bien à plat et éclairée', false);
+      setDebug('');
     }catch(err){
       setStatus("Impossible d'accéder à la caméra — vérifie les autorisations", false);
     }
@@ -315,54 +398,103 @@
     setStatus('', false);
   }
 
-  // ---------- CAPTURE + OCR ----------
+  // ---------- CAPTURE ----------
   btnCapture.onclick = async () => {
     if(!stream) return;
     const w = video.videoWidth, h = video.videoHeight;
     canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(video, 0, 0, w, h);
-    captured.src = canvas.toDataURL('image/jpeg', 0.92);
+    captured.src = canvas.toDataURL('image/jpeg', 0.95);
     captured.classList.remove('hidden');
     video.classList.add('hidden');
     frameGuide.classList.add('hidden');
+    cropBox.classList.remove('hidden');
+    adjustPanel.classList.add('show');
+    rereadRow.classList.remove('hidden');
+    posSlider.value = 4; heightSlider.value = 16;
+    updateCropBoxUI();
+
+    await runOcrOnCurrentCrop();
+  };
+
+  btnReread.onclick = () => runOcrOnCurrentCrop();
+
+  // ---------- PREPROCESS + OCR ----------
+  function preprocessCrop(sourceCanvas, cropXpx, cropYpx, cropWpx, cropHpx){
+    // Upscale the crop for better OCR resolution, then grayscale + contrast stretch
+    const scale = Math.max(1, Math.min(4, 900 / cropWpx));
+    const outW = Math.round(cropWpx * scale);
+    const outH = Math.round(cropHpx * scale);
+    workCanvas.width = outW;
+    workCanvas.height = outH;
+    const wctx = workCanvas.getContext('2d');
+    wctx.imageSmoothingEnabled = true;
+    wctx.imageSmoothingQuality = 'high';
+    wctx.drawImage(sourceCanvas, cropXpx, cropYpx, cropWpx, cropHpx, 0, 0, outW, outH);
+
+    const imgData = wctx.getImageData(0, 0, outW, outH);
+    const d = imgData.data;
+    // grayscale
+    let min = 255, max = 0;
+    const gray = new Uint8ClampedArray(outW*outH);
+    for(let i=0, p=0; i<d.length; i+=4, p++){
+      const g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+      gray[p] = g;
+      if(g < min) min = g;
+      if(g > max) max = g;
+    }
+    const range = Math.max(1, max - min);
+    for(let i=0, p=0; i<d.length; i+=4, p++){
+      let v = ((gray[p] - min) / range) * 255;
+      v = Math.max(0, Math.min(255, v));
+      d[i] = d[i+1] = d[i+2] = v;
+    }
+    wctx.putImageData(imgData, 0, 0);
+    return workCanvas;
+  }
+
+  async function runOcrOnCurrentCrop(){
+    const w = canvas.width, h = canvas.height;
+    const pos = parseFloat(posSlider.value)/100;
+    const hp = parseFloat(heightSlider.value)/100;
+    const cropX = Math.round(w * 0.04);
+    const cropY = Math.round(h * pos);
+    const cropW = Math.round(w * 0.92);
+    const cropH = Math.round(h * hp);
 
     scanline.classList.add('active');
     setStatus('Lecture du texte de la carte (OCR)…', true);
-    btnCapture.disabled = true;
+    setDebug('');
+    btnCapture.disabled = true; btnReread.disabled = true;
 
     try{
-      if(!ocrWorker){
-        ocrWorker = await Tesseract.createWorker('fra');
-      }
-      // Crop roughly to the upper name-band of the card to help OCR focus
-      const cropCanvas = document.createElement('canvas');
-      const cropH = Math.floor(h * 0.16);
-      cropCanvas.width = w; cropCanvas.height = cropH;
-      cropCanvas.getContext('2d').drawImage(canvas, 0, Math.floor(h*0.04), w, cropH, 0, 0, w, cropH);
-
-      const { data } = await ocrWorker.recognize(cropCanvas);
-      let text = (data.text || '').replace(/[^\p{L}\p{N}\s\-']/gu, ' ').trim();
-      // keep first plausible line, drop pure numbers/HP noise
-      let candidate = text.split('\n').map(l=>l.trim()).find(l => l.length >= 3 && /[a-zA-Zàâäéèêëïîôöùûüç]/.test(l)) || text;
-      candidate = candidate.split(/\s{2,}|HP|PV/i)[0].trim();
-
+      if(!ocrWorker){ await initOcr(); }
+      const processed = preprocessCrop(canvas, cropX, cropY, cropW, cropH);
+      const { data } = await ocrWorker.recognize(processed);
+      let raw = (data.text || '').trim();
       scanline.classList.remove('active');
 
-      if(candidate && candidate.length >= 2){
-        setStatus(`Texte détecté : "${candidate}" — recherche en cours…`, true);
+      let cleaned = raw.replace(/[^\p{L}\p{N}\s\-'\.]/gu, ' ').replace(/\s+/g,' ').trim();
+
+      if(cleaned && cleaned.replace(/[^a-zA-Zàâäéèêëïîôöùûüç]/g,'').length >= 2){
+        setDebug(cleaned);
+        // take the most letter-dense chunk (drops stray HP/numbers if any slipped in)
+        let candidate = cleaned.split(/\s+/).length > 6 ? cleaned.split(/\s+/).slice(0,6).join(' ') : cleaned;
+        setStatus(`Recherche de "${candidate}"…`, true);
         searchInput.value = candidate;
         await runSearch(candidate);
       } else {
-        setStatus("Texte illisible. Essaie une meilleure lumière ou tape le nom manuellement.", false);
+        setDebug(raw || '(rien de lisible)');
+        setStatus("Texte peu clair. Ajuste le cadre jaune sur le nom de la carte puis appuie sur « Relire », ou tape le nom manuellement.", false);
       }
     }catch(err){
       scanline.classList.remove('active');
       setStatus("Erreur pendant l'analyse — tape le nom de la carte manuellement.", false);
     } finally {
-      btnCapture.disabled = false;
+      btnCapture.disabled = false; btnReread.disabled = false;
     }
-  };
+  }
 
   // ---------- MANUAL SEARCH ----------
   btnSearch.onclick = () => runSearch(searchInput.value.trim());
@@ -375,15 +507,32 @@
     resultsLabel.textContent = 'Recherche…';
     resultsEl.innerHTML = `<div class="empty">Recherche de "${escapeHtml(query)}" sur TCGdex…</div>`;
     try{
-      const url = `https://api.tcgdex.net/v2/fr/cards?name=${encodeURIComponent(query)}&pagination:itemsPerPage=12`;
-      const res = await fetch(url);
-      if(!res.ok) throw new Error('bad response');
-      const cards = await res.json();
+      const cards = await searchTcgdex(query);
       renderResults(cards, query);
     }catch(err){
       resultsLabel.textContent = 'Résultats';
       resultsEl.innerHTML = `<div class="empty">Impossible de contacter TCGdex pour l'instant. Réessaie dans un instant.</div>`;
     }
+  }
+
+  async function searchTcgdex(query){
+    const url = `https://api.tcgdex.net/v2/fr/cards?name=${encodeURIComponent(query)}&pagination:itemsPerPage=12`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('bad response');
+    let cards = await res.json();
+    // If the exact phrase yields nothing, progressively fall back to fewer words
+    if((!cards || !cards.length) && query.includes(' ')){
+      const words = query.split(' ');
+      for(let n = words.length - 1; n >= 1; n--){
+        const shorter = words.slice(0, n).join(' ');
+        const r2 = await fetch(`https://api.tcgdex.net/v2/fr/cards?name=${encodeURIComponent(shorter)}&pagination:itemsPerPage=12`);
+        if(r2.ok){
+          const c2 = await r2.json();
+          if(c2 && c2.length){ cards = c2; break; }
+        }
+      }
+    }
+    return cards;
   }
 
   function renderResults(cards, query){
