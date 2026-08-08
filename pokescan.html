@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PokéScan">
+<meta name="theme-color" content="#0D0E17">
+<title>PokéScan — Scanner & Prix Cardmarket</title>
+<style>
+  :root{
+    --ink:#0D0E17;
+    --panel:#171827;
+    --panel-2:#1F2133;
+    --line: rgba(241,240,245,0.09);
+    --text:#F1F0F5;
+    --muted:#8B8AA3;
+    --cyan:#5EEAD4;
+    --magenta:#F472B6;
+    --gold:#FBBF24;
+    --holo: linear-gradient(120deg, var(--cyan), var(--magenta) 45%, var(--gold) 85%);
+    --radius: 18px;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
+  html,body{margin:0; padding:0; background:var(--ink); color:var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body{
+    padding-bottom: calc(28px + env(safe-area-inset-bottom));
+    min-height: 100vh;
+    background:
+      radial-gradient(80% 50% at 50% -10%, rgba(94,234,212,0.10), transparent 60%),
+      var(--ink);
+  }
+  .wrap{max-width:520px; margin:0 auto; padding: calc(18px + env(safe-area-inset-top)) 18px 0;}
+
+  header{display:flex; align-items:center; gap:12px; margin-bottom:18px;}
+  .mark{
+    width:40px; height:40px; border-radius:12px; flex:none;
+    background: var(--holo);
+    display:flex; align-items:center; justify-content:center;
+    box-shadow: 0 6px 18px -6px rgba(244,114,182,0.5);
+  }
+  .mark svg{width:22px; height:22px;}
+  h1{font-size:19px; margin:0; letter-spacing:-0.01em; font-weight:800;}
+  .sub{color:var(--muted); font-size:12.5px; margin-top:1px;}
+
+  .card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius: var(--radius);
+    padding:16px;
+    margin-bottom:14px;
+  }
+
+  /* Scan slot */
+  .slot{
+    position:relative;
+    aspect-ratio: 5/7;
+    max-height: 46vh;
+    border-radius: 14px;
+    overflow:hidden;
+    background: #06070D;
+    border: 1px solid var(--line);
+    display:flex; align-items:center; justify-content:center;
+  }
+  .slot video, .slot img.captured{
+    width:100%; height:100%; object-fit:cover; display:block;
+  }
+  .slot .placeholder{
+    color: var(--muted); font-size:13px; text-align:center; padding: 0 30px;
+    display:flex; flex-direction:column; align-items:center; gap:10px;
+  }
+  .slot .placeholder svg{width:34px; height:34px; opacity:0.5;}
+  .frame-guide{
+    position:absolute; inset:8%;
+    border-radius: 10%;
+    border: 1.5px dashed rgba(241,240,245,0.35);
+    pointer-events:none;
+  }
+  .scanline{
+    position:absolute; left:0; right:0; height:2px;
+    background: linear-gradient(90deg, transparent, var(--cyan), var(--magenta), transparent);
+    box-shadow: 0 0 12px 2px rgba(94,234,212,0.6);
+    top:0; opacity:0; pointer-events:none;
+  }
+  .scanline.active{ animation: scan 1.4s linear infinite; opacity:1; }
+  @keyframes scan{ 0%{ top:6%; } 100%{ top:94%; } }
+
+  .controls{display:flex; gap:10px; margin-top:12px;}
+  button{
+    font-family:inherit; font-weight:700; font-size:14.5px;
+    border:none; border-radius:12px; padding:13px 16px;
+    cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px;
+    transition: transform .12s ease, opacity .12s ease;
+  }
+  button:active{ transform: scale(0.97); }
+  .btn-primary{ background:var(--holo); color:#0D0E17; flex:1; }
+  .btn-ghost{ background:var(--panel-2); color:var(--text); border:1px solid var(--line); }
+  .btn-secondary{background:var(--panel-2); color:var(--text); border:1px solid var(--line); width:100%;}
+  button:disabled{ opacity:0.45; pointer-events:none; }
+  button svg{width:16px; height:16px;}
+
+  .status{
+    font-size:12.5px; color:var(--muted); margin-top:10px; min-height:16px;
+    display:flex; align-items:center; gap:8px;
+  }
+  .dot{width:6px; height:6px; border-radius:50%; background:var(--cyan); flex:none;}
+  .dot.busy{ animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse{ 0%,100%{opacity:0.3;} 50%{opacity:1;} }
+
+  /* Search */
+  .search-row{ display:flex; gap:8px; }
+  input[type=text]{
+    flex:1; background:var(--panel-2); border:1px solid var(--line); color:var(--text);
+    padding:12px 14px; border-radius:12px; font-size:15px; font-family:inherit;
+  }
+  input[type=text]::placeholder{ color: var(--muted); }
+  input[type=text]:focus{ outline:none; border-color: var(--cyan); }
+  label.small{ display:block; font-size:11.5px; text-transform:uppercase; letter-spacing:0.06em;
+    color:var(--muted); font-weight:700; margin-bottom:8px; }
+
+  /* Results */
+  .results{ display:flex; flex-direction:column; gap:8px; }
+  .result-item{
+    display:flex; align-items:center; gap:12px; padding:10px; border-radius:12px;
+    background:var(--panel-2); border:1px solid transparent; cursor:pointer;
+  }
+  .result-item:active{ border-color: var(--cyan); }
+  .result-item img{ width:38px; height:53px; object-fit:cover; border-radius:5px; background:#06070D; flex:none;}
+  .result-item .ri-name{ font-weight:700; font-size:14.5px; }
+  .result-item .ri-set{ font-size:12px; color:var(--muted); margin-top:1px; }
+  .result-item .ri-arrow{ margin-left:auto; color:var(--muted); font-size:18px; }
+
+  /* Detail */
+  .detail-top{ display:flex; gap:14px; }
+  .detail-top img{ width:104px; height:145px; object-fit:cover; border-radius:10px; flex:none;
+    border:1px solid var(--line); background:#06070D; }
+  .d-name{ font-size:18px; font-weight:800; margin:0 0 2px; }
+  .d-set{ font-size:13px; color:var(--muted); margin-bottom:8px; }
+  .badge{
+    display:inline-block; font-size:11px; font-weight:700; padding:3px 9px; border-radius:100px;
+    background: rgba(94,234,212,0.12); color:var(--cyan); border:1px solid rgba(94,234,212,0.3);
+    margin-right:6px; margin-bottom:6px;
+  }
+
+  .price-hero{
+    margin-top:16px; padding:16px; border-radius:14px;
+    background: linear-gradient(160deg, rgba(94,234,212,0.10), rgba(244,114,182,0.08));
+    border:1px solid var(--line);
+    text-align:center;
+  }
+  .price-hero .pv-label{ font-size:11.5px; text-transform:uppercase; letter-spacing:0.07em; color:var(--muted); font-weight:700; }
+  .price-hero .pv-value{ font-size:36px; font-weight:800; margin-top:4px; letter-spacing:-0.02em;
+    background: var(--holo); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .price-hero .pv-sub{ font-size:12px; color:var(--muted); margin-top:2px; }
+
+  .price-grid{
+    display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:12px;
+  }
+  .pg-item{ background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .pg-item .pg-label{ font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.04em; }
+  .pg-item .pg-value{ font-size:17px; font-weight:800; margin-top:2px; }
+
+  .variant-tabs{ display:flex; gap:6px; margin-top:14px; }
+  .variant-tab{
+    flex:1; text-align:center; padding:8px; border-radius:10px; font-size:12.5px; font-weight:700;
+    background:var(--panel-2); color:var(--muted); border:1px solid var(--line); cursor:pointer;
+  }
+  .variant-tab.active{ background: rgba(94,234,212,0.14); color:var(--text); border-color: var(--cyan); }
+
+  .updated{ margin-top:12px; font-size:11.5px; color:var(--muted); text-align:center; }
+
+  .empty{ text-align:center; color:var(--muted); font-size:13px; padding: 10px 4px 2px; }
+
+  .install-banner{
+    display:flex; align-items:center; gap:10px; padding:12px 14px; border-radius:14px;
+    background: var(--panel-2); border:1px dashed rgba(251,191,36,0.4); margin-bottom:14px;
+    font-size:12.5px; color:var(--text);
+  }
+  .install-banner b{ color: var(--gold); }
+  .install-banner .close{ margin-left:auto; color:var(--muted); font-size:18px; cursor:pointer; padding:2px 6px; }
+
+  .hidden{ display:none !important; }
+  canvas{ display:none; }
+
+  footer{ text-align:center; color:var(--muted); font-size:11px; margin-top:8px; padding: 6px 20px 0; line-height:1.6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="mark">
+      <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#0D0E17" stroke-width="2"/><path d="M3 12H21" stroke="#0D0E17" stroke-width="2"/><circle cx="12" cy="12" r="3" fill="#0D0E17"/></svg>
+    </div>
+    <div>
+      <h1>PokéScan</h1>
+      <div class="sub">Reconnaissance de carte · Prix Cardmarket FR</div>
+    </div>
+  </header>
+
+  <div class="install-banner" id="installBanner">
+    <span>📲</span>
+    <span><b>Astuce :</b> ajoute cette page à ton écran d'accueil (Partager → Sur l'écran d'accueil) pour l'utiliser comme une vraie appli.</span>
+    <span class="close" id="closeBanner">✕</span>
+  </div>
+
+  <!-- SCANNER -->
+  <div class="card">
+    <label class="small">Scanner une carte</label>
+    <div class="slot" id="slot">
+      <div class="placeholder" id="placeholder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3.2"/><path d="M8 5l1.2-2h5.6L16 5"/></svg>
+        <span>Active la caméra puis cadre la carte dans le repère</span>
+      </div>
+      <video id="video" playsinline muted class="hidden"></video>
+      <img id="captured" class="captured hidden">
+      <div class="frame-guide hidden" id="frameGuide"></div>
+      <div class="scanline" id="scanline"></div>
+    </div>
+    <div class="controls">
+      <button class="btn-ghost" id="btnCamera">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3.2"/></svg>
+        Caméra
+      </button>
+      <button class="btn-primary" id="btnCapture" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="#0D0E17" stroke-width="2.2"><circle cx="12" cy="12" r="8"/></svg>
+        Scanner
+      </button>
+    </div>
+    <div class="status" id="status"></div>
+  </div>
+
+  <!-- SEARCH -->
+  <div class="card">
+    <label class="small">Ou cherche à la main</label>
+    <div class="search-row">
+      <input type="text" id="searchInput" placeholder="Ex : Dracaufeu, Salamèche VMAX…">
+      <button class="btn-ghost" id="btnSearch" style="padding:12px 18px;">OK</button>
+    </div>
+  </div>
+
+  <!-- RESULTS -->
+  <div class="card hidden" id="resultsCard">
+    <label class="small" id="resultsLabel">Résultats</label>
+    <div class="results" id="results"></div>
+  </div>
+
+  <!-- DETAIL -->
+  <div class="card hidden" id="detailCard"></div>
+
+  <footer>
+    Prix indicatifs fournis par TCGdex (données Cardmarket, EUR). Le scan et l'OCR se font directement sur ton téléphone.
+  </footer>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+(function(){
+  const $ = (id) => document.getElementById(id);
+  const video = $('video'), canvas = $('canvas'), captured = $('captured');
+  const placeholder = $('placeholder'), frameGuide = $('frameGuide'), scanline = $('scanline');
+  const btnCamera = $('btnCamera'), btnCapture = $('btnCapture');
+  const statusEl = $('status');
+  const resultsCard = $('resultsCard'), resultsEl = $('results'), resultsLabel = $('resultsLabel');
+  const detailCard = $('detailCard');
+  const searchInput = $('searchInput'), btnSearch = $('btnSearch');
+  const installBanner = $('installBanner'), closeBanner = $('closeBanner');
+
+  let stream = null;
+  let ocrWorker = null;
+
+  closeBanner.onclick = () => installBanner.classList.add('hidden');
+
+  function setStatus(text, busy){
+    if(!text){ statusEl.innerHTML = ''; return; }
+    statusEl.innerHTML = `<span class="dot${busy?' busy':''}"></span><span>${text}</span>`;
+  }
+
+  // ---------- CAMERA ----------
+  btnCamera.onclick = async () => {
+    if(stream){ stopCamera(); return; }
+    try{
+      setStatus('Ouverture de la caméra…', true);
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width:{ideal:1280}, height:{ideal:1280} },
+        audio:false
+      });
+      video.srcObject = stream;
+      await video.play();
+      placeholder.classList.add('hidden');
+      captured.classList.add('hidden');
+      video.classList.remove('hidden');
+      frameGuide.classList.remove('hidden');
+      btnCamera.textContent = '⨯ Fermer';
+      btnCapture.disabled = false;
+      setStatus('Cadre la carte, bien à plat et éclairée', false);
+    }catch(err){
+      setStatus("Impossible d'accéder à la caméra — vérifie les autorisations", false);
+    }
+  };
+
+  function stopCamera(){
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); stream = null; }
+    video.classList.add('hidden');
+    frameGuide.classList.add('hidden');
+    btnCamera.textContent = 'Caméra';
+    btnCapture.disabled = true;
+    if(captured.classList.contains('hidden')) placeholder.classList.remove('hidden');
+    setStatus('', false);
+  }
+
+  // ---------- CAPTURE + OCR ----------
+  btnCapture.onclick = async () => {
+    if(!stream) return;
+    const w = video.videoWidth, h = video.videoHeight;
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, w, h);
+    captured.src = canvas.toDataURL('image/jpeg', 0.92);
+    captured.classList.remove('hidden');
+    video.classList.add('hidden');
+    frameGuide.classList.add('hidden');
+
+    scanline.classList.add('active');
+    setStatus('Lecture du texte de la carte (OCR)…', true);
+    btnCapture.disabled = true;
+
+    try{
+      if(!ocrWorker){
+        ocrWorker = await Tesseract.createWorker('fra');
+      }
+      // Crop roughly to the upper name-band of the card to help OCR focus
+      const cropCanvas = document.createElement('canvas');
+      const cropH = Math.floor(h * 0.16);
+      cropCanvas.width = w; cropCanvas.height = cropH;
+      cropCanvas.getContext('2d').drawImage(canvas, 0, Math.floor(h*0.04), w, cropH, 0, 0, w, cropH);
+
+      const { data } = await ocrWorker.recognize(cropCanvas);
+      let text = (data.text || '').replace(/[^\p{L}\p{N}\s\-']/gu, ' ').trim();
+      // keep first plausible line, drop pure numbers/HP noise
+      let candidate = text.split('\n').map(l=>l.trim()).find(l => l.length >= 3 && /[a-zA-Zàâäéèêëïîôöùûüç]/.test(l)) || text;
+      candidate = candidate.split(/\s{2,}|HP|PV/i)[0].trim();
+
+      scanline.classList.remove('active');
+
+      if(candidate && candidate.length >= 2){
+        setStatus(`Texte détecté : "${candidate}" — recherche en cours…`, true);
+        searchInput.value = candidate;
+        await runSearch(candidate);
+      } else {
+        setStatus("Texte illisible. Essaie une meilleure lumière ou tape le nom manuellement.", false);
+      }
+    }catch(err){
+      scanline.classList.remove('active');
+      setStatus("Erreur pendant l'analyse — tape le nom de la carte manuellement.", false);
+    } finally {
+      btnCapture.disabled = false;
+    }
+  };
+
+  // ---------- MANUAL SEARCH ----------
+  btnSearch.onclick = () => runSearch(searchInput.value.trim());
+  searchInput.addEventListener('keydown', (e) => { if(e.key === 'Enter') runSearch(searchInput.value.trim()); });
+
+  async function runSearch(query){
+    if(!query){ return; }
+    detailCard.classList.add('hidden');
+    resultsCard.classList.remove('hidden');
+    resultsLabel.textContent = 'Recherche…';
+    resultsEl.innerHTML = `<div class="empty">Recherche de "${escapeHtml(query)}" sur TCGdex…</div>`;
+    try{
+      const url = `https://api.tcgdex.net/v2/fr/cards?name=${encodeURIComponent(query)}&pagination:itemsPerPage=12`;
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('bad response');
+      const cards = await res.json();
+      renderResults(cards, query);
+    }catch(err){
+      resultsLabel.textContent = 'Résultats';
+      resultsEl.innerHTML = `<div class="empty">Impossible de contacter TCGdex pour l'instant. Réessaie dans un instant.</div>`;
+    }
+  }
+
+  function renderResults(cards, query){
+    if(!cards || !cards.length){
+      resultsLabel.textContent = 'Résultats';
+      resultsEl.innerHTML = `<div class="empty">Aucune carte trouvée pour "${escapeHtml(query)}". Essaie un nom plus court ou vérifie l'orthographe.</div>`;
+      return;
+    }
+    resultsLabel.textContent = `${cards.length} résultat${cards.length>1?'s':''}`;
+    resultsEl.innerHTML = '';
+    cards.forEach(c => {
+      const img = c.image ? `${c.image}/low.webp` : '';
+      const div = document.createElement('div');
+      div.className = 'result-item';
+      div.innerHTML = `
+        <img src="${img}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+        <div>
+          <div class="ri-name">${escapeHtml(c.name || '—')}</div>
+          <div class="ri-set">${escapeHtml(c.id || '')}</div>
+        </div>
+        <div class="ri-arrow">›</div>`;
+      div.onclick = () => loadCardDetail(c.id);
+      resultsEl.appendChild(div);
+    });
+  }
+
+  // ---------- DETAIL + PRICING ----------
+  let currentVariant = 'normal';
+
+  async function loadCardDetail(id){
+    detailCard.classList.remove('hidden');
+    detailCard.innerHTML = `<div class="empty">Chargement de la carte…</div>`;
+    detailCard.scrollIntoView({behavior:'smooth', block:'start'});
+    try{
+      const res = await fetch(`https://api.tcgdex.net/v2/fr/cards/${encodeURIComponent(id)}`);
+      if(!res.ok) throw new Error('not found');
+      const card = await res.json();
+      currentVariant = 'normal';
+      renderDetail(card);
+    }catch(err){
+      detailCard.innerHTML = `<div class="empty">Impossible de charger le détail de cette carte.</div>`;
+    }
+  }
+
+  function fmtEUR(v){
+    if(v === undefined || v === null) return '—';
+    return v.toLocaleString('fr-FR', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' €';
+  }
+
+  function renderDetail(card){
+    const img = card.image ? `${card.image}/high.webp` : '';
+    const cm = (card.pricing && card.pricing.cardmarket) || null;
+    const hasHolo = cm && (cm['avg-holo'] !== undefined);
+
+    const setName = (card.set && card.set.name) ? card.set.name : '';
+    const rarity = card.rarity || '';
+
+    let priceBlockHtml = `<div class="empty">Aucun prix Cardmarket disponible pour cette carte.</div>`;
+    if(cm){
+      const suffix = currentVariant === 'holo' ? '-holo' : '';
+      const avg = cm['avg'+suffix];
+      const low = cm['low'+suffix];
+      const trend = cm['trend'+suffix];
+      const avg7 = cm['avg7'+suffix];
+      const avg30 = cm['avg30'+suffix];
+
+      priceBlockHtml = `
+        <div class="price-hero">
+          <div class="pv-label">Prix moyen (Cardmarket)</div>
+          <div class="pv-value">${fmtEUR(avg)}</div>
+          <div class="pv-sub">Tendance actuelle : ${fmtEUR(trend)}</div>
+        </div>
+        <div class="price-grid">
+          <div class="pg-item"><div class="pg-label">Prix le plus bas</div><div class="pg-value">${fmtEUR(low)}</div></div>
+          <div class="pg-item"><div class="pg-label">Moy. 7 jours</div><div class="pg-value">${fmtEUR(avg7)}</div></div>
+          <div class="pg-item"><div class="pg-label">Moy. 30 jours</div><div class="pg-value">${fmtEUR(avg30)}</div></div>
+          <div class="pg-item"><div class="pg-label">Devise</div><div class="pg-value">EUR</div></div>
+        </div>
+        ${hasHolo ? `
+        <div class="variant-tabs">
+          <div class="variant-tab ${currentVariant==='normal'?'active':''}" data-v="normal">Standard</div>
+          <div class="variant-tab ${currentVariant==='holo'?'active':''}" data-v="holo">Holo</div>
+        </div>` : ''}
+        <div class="updated">Mis à jour : ${cm.updated ? new Date(cm.updated).toLocaleDateString('fr-FR') : '—'}</div>
+      `;
+    }
+
+    detailCard.innerHTML = `
+      <div class="detail-top">
+        <img src="${img}" alt="" onerror="this.style.visibility='hidden'">
+        <div>
+          <p class="d-name">${escapeHtml(card.name || '—')}</p>
+          <div class="d-set">${escapeHtml(setName)}${card.localId ? ' · N°'+escapeHtml(String(card.localId)) : ''}</div>
+          ${rarity ? `<span class="badge">${escapeHtml(rarity)}</span>` : ''}
+          ${card.hp ? `<span class="badge">${escapeHtml(String(card.hp))} PV</span>` : ''}
+        </div>
+      </div>
+      ${priceBlockHtml}
+    `;
+
+    detailCard.querySelectorAll('.variant-tab').forEach(tab => {
+      tab.onclick = () => { currentVariant = tab.dataset.v; renderDetail(card); };
+    });
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  }
+
+  window.addEventListener('pagehide', stopCamera);
+})();
+</script>
+</body>
+</html>
