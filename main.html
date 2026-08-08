@@ -89,20 +89,6 @@
   .scanline.active{ animation: scan 1.4s linear infinite; opacity:1; }
   @keyframes scan{ 0%{ top:6%; } 100%{ top:94%; } }
 
-  /* Crop selection overlay on captured image */
-  .crop-box{
-    position:absolute; left:4%; right:4%;
-    border:2px solid var(--gold);
-    background: rgba(251,191,36,0.10);
-    border-radius:6px;
-    pointer-events:none;
-    box-shadow: 0 0 0 2000px rgba(6,7,13,0.55);
-  }
-  .crop-box .tag{
-    position:absolute; top:-22px; left:0; font-size:10.5px; font-weight:800;
-    color:#0D0E17; background:var(--gold); padding:2px 7px; border-radius:6px;
-  }
-
   .controls{display:flex; gap:10px; margin-top:12px;}
   button{
     font-family:inherit; font-weight:700; font-size:14.5px;
@@ -118,15 +104,6 @@
   button svg{width:16px; height:16px;}
 
   /* Adjust sliders shown after capture */
-  .adjust{ margin-top:12px; display:none; }
-  .adjust.show{ display:block; }
-  .adjust-row{ display:flex; align-items:center; gap:10px; margin-bottom:8px; }
-  .adjust-row .al{ font-size:11.5px; color:var(--muted); font-weight:700; width:76px; flex:none; }
-  input[type=range]{ flex:1; -webkit-appearance:none; height:4px; background:var(--panel-2); border-radius:4px; outline:none; }
-  input[type=range]::-webkit-slider-thumb{
-    -webkit-appearance:none; width:18px; height:18px; border-radius:50%; background:var(--gold);
-    border:2px solid var(--ink); margin-top:-1px;
-  }
 
   .status{
     font-size:12.5px; color:var(--muted); margin-top:10px; min-height:16px;
@@ -257,19 +234,7 @@
       <video id="video" playsinline muted class="hidden"></video>
       <img id="captured" class="captured hidden">
       <div class="frame-guide hidden" id="frameGuide"></div>
-      <div class="crop-box hidden" id="cropBox"><span class="tag">Zone lue</span></div>
       <div class="scanline" id="scanline"></div>
-    </div>
-
-    <div class="adjust" id="adjustPanel">
-      <div class="adjust-row">
-        <span class="al">Position</span>
-        <input type="range" id="posSlider" min="0" max="80" value="4">
-      </div>
-      <div class="adjust-row">
-        <span class="al">Hauteur</span>
-        <input type="range" id="heightSlider" min="8" max="45" value="16">
-      </div>
     </div>
 
     <div class="controls">
@@ -281,9 +246,6 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="#0D0E17" stroke-width="2.2"><circle cx="12" cy="12" r="8"/></svg>
         Scanner
       </button>
-    </div>
-    <div class="controls hidden" id="rereadRow">
-      <button class="btn-secondary" id="btnReread">🔁 Relire le texte avec ce cadrage</button>
     </div>
     <div class="status" id="status"></div>
     <div class="ocr-debug" id="ocrDebug"></div>
@@ -322,14 +284,13 @@
   const $ = (id) => document.getElementById(id);
   const video = $('video'), canvas = $('canvas'), captured = $('captured'), workCanvas = $('workCanvas');
   const hashCanvas = $('hashCanvas');
-  const placeholder = $('placeholder'), frameGuide = $('frameGuide'), scanline = $('scanline'), cropBox = $('cropBox');
-  const btnCamera = $('btnCamera'), btnCapture = $('btnCapture'), btnReread = $('btnReread'), rereadRow = $('rereadRow');
+  const placeholder = $('placeholder'), frameGuide = $('frameGuide'), scanline = $('scanline');
+  const btnCamera = $('btnCamera'), btnCapture = $('btnCapture');
   const statusEl = $('status'), ocrDebug = $('ocrDebug');
   const resultsCard = $('resultsCard'), resultsEl = $('results'), resultsLabel = $('resultsLabel');
   const detailCard = $('detailCard');
   const searchInput = $('searchInput'), btnSearch = $('btnSearch');
   const installBanner = $('installBanner'), closeBanner = $('closeBanner');
-  const adjustPanel = $('adjustPanel'), posSlider = $('posSlider'), heightSlider = $('heightSlider');
 
   let stream = null;
   let ocrWorker = null;
@@ -363,14 +324,6 @@
   }
   initOcr();
 
-  function updateCropBoxUI(){
-    const pos = posSlider.value, h = heightSlider.value;
-    cropBox.style.top = pos + '%';
-    cropBox.style.height = h + '%';
-  }
-  posSlider.addEventListener('input', updateCropBoxUI);
-  heightSlider.addEventListener('input', updateCropBoxUI);
-
   // ---------- CAMERA ----------
   btnCamera.onclick = async () => {
     if(stream){ stopCamera(); return; }
@@ -384,9 +337,6 @@
       await video.play();
       placeholder.classList.add('hidden');
       captured.classList.add('hidden');
-      cropBox.classList.add('hidden');
-      adjustPanel.classList.remove('show');
-      rereadRow.classList.add('hidden');
       video.classList.remove('hidden');
       frameGuide.classList.remove('hidden');
       btnCamera.textContent = '⨯ Fermer';
@@ -420,21 +370,14 @@
     captured.classList.remove('hidden');
     video.classList.add('hidden');
     frameGuide.classList.add('hidden');
-    cropBox.classList.remove('hidden');
-    adjustPanel.classList.add('show');
-    rereadRow.classList.remove('hidden');
-    posSlider.value = 4; heightSlider.value = 16;
-    updateCropBoxUI();
 
     // Full-card crop (matches the dashed frame guide) used for visual matching
     const fx = Math.round(w * 0.08), fy = Math.round(h * 0.08);
     const fw = Math.round(w * 0.84), fh = Math.round(h * 0.84);
     capturedCardHash = imageDataToHash(cropToImageData(canvas, fx, fy, fw, fh));
 
-    await runOcrOnCurrentCrop();
+    await runAutoOcr();
   };
-
-  btnReread.onclick = () => runOcrOnCurrentCrop();
 
   // ---------- PREPROCESS + OCR ----------
   function preprocessCrop(sourceCanvas, cropXpx, cropYpx, cropWpx, cropHpx){
@@ -470,45 +413,55 @@
     return workCanvas;
   }
 
-  async function runOcrOnCurrentCrop(){
+  async function tryOcrOnBand(pos, hp){
     const w = canvas.width, h = canvas.height;
-    const pos = parseFloat(posSlider.value)/100;
-    const hp = parseFloat(heightSlider.value)/100;
     const cropX = Math.round(w * 0.04);
     const cropY = Math.round(h * pos);
     const cropW = Math.round(w * 0.92);
     const cropH = Math.round(h * hp);
+    const processed = preprocessCrop(canvas, cropX, cropY, cropW, cropH);
+    const { data } = await ocrWorker.recognize(processed);
+    const raw = (data.text || '').trim();
+    const cleaned = raw.replace(/[^\p{L}\p{N}\s\-'\.]/gu, ' ').replace(/\s+/g,' ').trim();
+    const letterCount = cleaned.replace(/[^a-zA-Zàâäéèêëïîôöùûüç]/g,'').length;
+    return { raw, cleaned, letterCount };
+  }
 
+  async function runAutoOcr(){
     scanline.classList.add('active');
     setStatus('Lecture du texte de la carte (OCR)…', true);
     setDebug('');
-    btnCapture.disabled = true; btnReread.disabled = true;
+    btnCapture.disabled = true;
 
     try{
       if(!ocrWorker){ await initOcr(); }
-      const processed = preprocessCrop(canvas, cropX, cropY, cropW, cropH);
-      const { data } = await ocrWorker.recognize(processed);
-      let raw = (data.text || '').trim();
+
+      // First pass: the name band on most modern/vintage cards. Second pass: a
+      // taller, slightly lower band as a silent fallback for layouts where the
+      // first pass doesn't find enough legible text.
+      let result = await tryOcrOnBand(0.04, 0.16);
+      if(result.letterCount < 2){
+        result = await tryOcrOnBand(0.03, 0.26);
+      }
+
       scanline.classList.remove('active');
 
-      let cleaned = raw.replace(/[^\p{L}\p{N}\s\-'\.]/gu, ' ').replace(/\s+/g,' ').trim();
-
-      if(cleaned && cleaned.replace(/[^a-zA-Zàâäéèêëïîôöùûüç]/g,'').length >= 2){
-        setDebug(cleaned);
-        // take the most letter-dense chunk (drops stray HP/numbers if any slipped in)
-        let candidate = cleaned.split(/\s+/).length > 6 ? cleaned.split(/\s+/).slice(0,6).join(' ') : cleaned;
+      if(result.letterCount >= 2){
+        setDebug(result.cleaned);
+        const words = result.cleaned.split(/\s+/);
+        const candidate = words.length > 6 ? words.slice(0,6).join(' ') : result.cleaned;
         setStatus(`Recherche de "${candidate}"…`, true);
         searchInput.value = candidate;
         await runSearch(candidate);
       } else {
-        setDebug(raw || '(rien de lisible)');
-        setStatus("Texte peu clair. Ajuste le cadre jaune sur le nom de la carte puis appuie sur « Relire », ou tape le nom manuellement.", false);
+        setDebug(result.raw || '(rien de lisible)');
+        setStatus("Texte peu clair sur cette photo. Réessaie avec plus de lumière, bien à plat, ou tape le nom manuellement.", false);
       }
     }catch(err){
       scanline.classList.remove('active');
       setStatus("Erreur pendant l'analyse — tape le nom de la carte manuellement.", false);
     } finally {
-      btnCapture.disabled = false; btnReread.disabled = false;
+      btnCapture.disabled = false;
     }
   }
 
