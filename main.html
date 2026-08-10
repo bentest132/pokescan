@@ -396,8 +396,9 @@
   };
 
   // ---------- PREPROCESS + OCR ----------
-  function preprocessCrop(sourceCanvas, cropXpx, cropYpx, cropWpx, cropHpx){
-    // Upscale the crop for better OCR resolution, then grayscale + contrast stretch
+  function preprocessCrop(sourceCanvas, cropXpx, cropYpx, cropWpx, cropHpx, mode){
+    // Upscale the crop for better OCR resolution, then grayscale + normalize contrast.
+    // mode: 'stretch' (percentile-clipped contrast stretch, default) or 'binary' (Otsu threshold).
     const scale = Math.max(1, Math.min(4, 900 / cropWpx));
     const outW = Math.round(cropWpx * scale);
     const outH = Math.round(cropHpx * scale);
@@ -410,33 +411,69 @@
 
     const imgData = wctx.getImageData(0, 0, outW, outH);
     const d = imgData.data;
-    // grayscale
-    let min = 255, max = 0;
-    const gray = new Uint8ClampedArray(outW*outH);
+    const n = outW*outH;
+    const gray = new Uint8ClampedArray(n);
+    const hist = new Array(256).fill(0);
     for(let i=0, p=0; i<d.length; i+=4, p++){
       const g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
       gray[p] = g;
-      if(g < min) min = g;
-      if(g > max) max = g;
+      hist[Math.round(g)]++;
     }
-    const range = Math.max(1, max - min);
-    for(let i=0, p=0; i<d.length; i+=4, p++){
-      let v = ((gray[p] - min) / range) * 255;
-      v = Math.max(0, Math.min(255, v));
-      d[i] = d[i+1] = d[i+2] = v;
+
+    if(mode === 'binary'){
+      // Otsu's method: find the threshold that best separates two intensity classes.
+      let sumAll = 0;
+      for(let t=0;t<256;t++) sumAll += t*hist[t];
+      let wB=0, sumB=0, varMax=-1, threshold=127;
+      for(let t=0;t<256;t++){
+        wB += hist[t];
+        if(wB === 0) continue;
+        const wF = n - wB;
+        if(wF === 0) break;
+        sumB += t*hist[t];
+        const mB = sumB/wB, mF = (sumAll-sumB)/wF;
+        const between = wB*wF*(mB-mF)*(mB-mF);
+        if(between > varMax){ varMax = between; threshold = t; }
+      }
+      // Decide polarity so text (assumed minority) ends up dark-on-light.
+      let below = 0;
+      for(let t=0;t<threshold;t++) below += hist[t];
+      const textIsBelow = below < n/2; // minority class is below threshold -> treat as text
+      for(let i=0, p=0; i<d.length; i+=4, p++){
+        const isDark = gray[p] < threshold;
+        const isText = textIsBelow ? isDark : !isDark;
+        const v = isText ? 0 : 255;
+        d[i] = d[i+1] = d[i+2] = v;
+      }
+    } else {
+      // Percentile-clipped contrast stretch: ignore the extreme ~2% brightest/darkest
+      // pixels (glare hotspots, deep shadows) so a small reflection doesn't crush
+      // contrast on the rest of the text.
+      let cum = 0, lo = 0, hi = 255;
+      const loTarget = n * 0.02, hiTarget = n * 0.98;
+      for(let t=0;t<256;t++){ cum += hist[t]; if(cum >= loTarget){ lo = t; break; } }
+      cum = 0;
+      for(let t=255;t>=0;t--){ cum += hist[t]; if(cum >= (n-hiTarget)){ hi = t; break; } }
+      const range = Math.max(1, hi - lo);
+      for(let i=0, p=0; i<d.length; i+=4, p++){
+        let v = ((gray[p] - lo) / range) * 255;
+        v = Math.max(0, Math.min(255, v));
+        d[i] = d[i+1] = d[i+2] = v;
+      }
     }
+
     wctx.putImageData(imgData, 0, 0);
     return workCanvas;
   }
 
-  async function tryOcrOnBand(pos, hp, leftPct){
+  async function tryOcrOnBand(pos, hp, leftPct, mode){
     const w = canvas.width, h = canvas.height;
     const lp = leftPct !== undefined ? leftPct : 0.04;
     const cropX = Math.round(w * lp);
     const cropY = Math.round(h * pos);
     const cropW = Math.round(w * (1 - lp*2));
     const cropH = Math.round(h * hp);
-    const processed = preprocessCrop(canvas, cropX, cropY, cropW, cropH);
+    const processed = preprocessCrop(canvas, cropX, cropY, cropW, cropH, mode);
     const { data } = await ocrWorker.recognize(processed);
     const raw = (data.text || '').trim();
     const cleaned = raw.replace(/[^\p{L}\p{N}\s\-'\.]/gu, ' ').replace(/\s+/g,' ').trim();
@@ -453,18 +490,27 @@
     try{
       if(!ocrWorker){ await initOcr(); }
 
-      // Primary pass: exactly the region shown by the yellow "Nom ici" guide
-      // during framing (top:12% height:13% left/right:11%), so what the user
-      // aimed at is exactly what gets read. Fallback: a taller, slightly wider
-      // band in case the name sat a little outside the guide.
-      let result = await tryOcrOnBand(0.12, 0.13, 0.11);
-      if(result.letterCount < 2){
-        result = await tryOcrOnBand(0.06, 0.24, 0.06);
+      // Try the guided name band first with robust contrast stretch, then the
+      // same band with pure black/white (Otsu) binarization — this second mode
+      // is what rescues text under glare/reflections (toploaders, holo foil).
+      // A wider fallback band is tried last in case the name sat outside the guide.
+      let result = await tryOcrOnBand(0.12, 0.13, 0.11, 'stretch');
+      if(result.letterCount < 3){
+        const r2 = await tryOcrOnBand(0.12, 0.13, 0.11, 'binary');
+        if(r2.letterCount > result.letterCount) result = r2;
+      }
+      if(result.letterCount < 3){
+        const r3 = await tryOcrOnBand(0.06, 0.24, 0.06, 'stretch');
+        if(r3.letterCount > result.letterCount) result = r3;
+      }
+      if(result.letterCount < 3){
+        const r4 = await tryOcrOnBand(0.06, 0.24, 0.06, 'binary');
+        if(r4.letterCount > result.letterCount) result = r4;
       }
 
       scanline.classList.remove('active');
 
-      if(result.letterCount >= 2){
+      if(result.letterCount >= 3){
         setDebug(result.cleaned);
         const words = result.cleaned.split(/\s+/);
         const candidate = words.length > 6 ? words.slice(0,6).join(' ') : result.cleaned;
