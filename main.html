@@ -296,7 +296,6 @@
   let ocrWorker = null;
   let ocrReady = false;
   let capturedCardHash = null; // perceptual hash (dHash, 64-bit as bit array) of the scanned card
-  let capturedCardRect = null; // {x,y,w,h} full-card crop in canvas pixels, for name-band detection
   let visualMatchToken = 0; // cancels stale scoring passes when a new capture/search happens
 
   closeBanner.onclick = () => installBanner.classList.add('hidden');
@@ -372,12 +371,10 @@
     video.classList.add('hidden');
     frameGuide.classList.add('hidden');
 
-    // Full-card crop (matches the dashed frame guide) used for visual matching
-    // and for auto name-band detection.
+    // Full-card crop (matches the dashed frame guide) used for visual matching.
     const fx = Math.round(w * 0.08), fy = Math.round(h * 0.08);
     const fw = Math.round(w * 0.84), fh = Math.round(h * 0.84);
     capturedCardHash = imageDataToHash(cropToImageData(canvas, fx, fy, fw, fh));
-    capturedCardRect = { x: fx, y: fy, w: fw, h: fh };
 
     await runAutoOcr();
   };
@@ -489,109 +486,6 @@
     return ocrOnRect(cropX, cropY, cropW, cropH, mode);
   }
 
-  // ---------- AUTO NAME-BAND DETECTION (biggest text line near the top) ----------
-  // Card names are consistently the tallest, boldest text in the top portion of
-  // the card, at a consistent font across sets. Instead of guessing a fixed
-  // percentage band, find that text line directly: binarize the top of the card,
-  // measure the height (stroke thickness) of each horizontal text band, and pick
-  // the tallest one wide enough to be a name (not the narrower PV/HP digits).
-  function detectNameBandRect(cardX, cardY, cardW, cardH){
-    const scale = Math.min(1, 420 / cardW);
-    const outW = Math.max(1, Math.round(cardW * scale));
-    const searchH = Math.round(cardH * 0.42); // only look in the top 42% of the card
-    const outH = Math.max(1, Math.round(searchH * scale));
-
-    hashCanvas.width = outW; hashCanvas.height = outH;
-    const hctx = hashCanvas.getContext('2d');
-    hctx.imageSmoothingEnabled = true;
-    hctx.drawImage(canvas, cardX, cardY, cardW, searchH, 0, 0, outW, outH);
-    const imgData = hctx.getImageData(0, 0, outW, outH);
-    const d = imgData.data;
-
-    const gray = new Float32Array(outW*outH);
-    const hist = new Array(256).fill(0);
-    for(let i=0, p=0; i<d.length; i+=4, p++){
-      const g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
-      gray[p] = g;
-      hist[Math.round(g)]++;
-    }
-    // Otsu threshold
-    const n = outW*outH;
-    let sumAll = 0; for(let t=0;t<256;t++) sumAll += t*hist[t];
-    let wB=0, sumB=0, varMax=-1, threshold=127;
-    for(let t=0;t<256;t++){
-      wB += hist[t]; if(wB===0) continue;
-      const wF = n-wB; if(wF===0) break;
-      sumB += t*hist[t];
-      const mB=sumB/wB, mF=(sumAll-sumB)/wF;
-      const between = wB*wF*(mB-mF)*(mB-mF);
-      if(between>varMax){ varMax=between; threshold=t; }
-    }
-    let below=0; for(let t=0;t<threshold;t++) below += hist[t];
-    const inkIsBelow = below < n/2; // minority class = ink (text)
-
-    // Per-row ink pixel count + per-row min/max ink column
-    const rowInk = new Array(outH).fill(0);
-    const rowMinX = new Array(outH).fill(Infinity);
-    const rowMaxX = new Array(outH).fill(-Infinity);
-    for(let y=0; y<outH; y++){
-      for(let x=0; x<outW; x++){
-        const p = y*outW + x;
-        const isInk = inkIsBelow ? (gray[p] < threshold) : (gray[p] >= threshold);
-        if(isInk){
-          rowInk[y]++;
-          if(x < rowMinX[y]) rowMinX[y] = x;
-          if(x > rowMaxX[y]) rowMaxX[y] = x;
-        }
-      }
-    }
-
-    const textRow = rowInk.map(c => c > outW * 0.035);
-    // Group contiguous text rows into bands, bridging tiny 1-2px gaps (accents, etc.)
-    const bands = [];
-    let start = -1, gap = 0;
-    for(let y=0; y<outH; y++){
-      if(textRow[y]){
-        if(start === -1) start = y;
-        gap = 0;
-      } else if(start !== -1){
-        gap++;
-        if(gap > 2){ bands.push([start, y-gap]); start = -1; gap = 0; }
-      }
-    }
-    if(start !== -1) bands.push([start, outH-1]);
-
-    let best = null;
-    for(const [s,e] of bands){
-      const heightPx = e - s + 1;
-      if(heightPx < 4) continue; // too thin to be the name, likely noise
-      let minX = Infinity, maxX = -Infinity;
-      for(let y=s; y<=e; y++){
-        if(rowMinX[y] < minX) minX = rowMinX[y];
-        if(rowMaxX[y] > maxX) maxX = rowMaxX[y];
-      }
-      const xExtentFrac = (maxX - minX) / outW;
-      // Must span meaningfully (a real name, not a narrow icon/badge) and start
-      // left-of-center (the PV/HP block sits further right).
-      if(xExtentFrac < 0.28 || minX > outW * 0.55) continue;
-      if(!best || heightPx > best.heightPx){
-        best = { s, e, heightPx, minX, maxX };
-      }
-    }
-    if(!best) return null;
-
-    const pad = Math.round(best.heightPx * 0.35);
-    const rectY = cardY + Math.max(0, (best.s - pad) / scale);
-    const rectH = Math.min(searchH, (best.heightPx + pad*2) / scale);
-    const rectX = cardX + Math.max(0, (best.minX - outW*0.02) / scale);
-    const rectW = Math.min(cardW - (rectX - cardX), ((best.maxX - best.minX) + outW*0.04) / scale);
-
-    return {
-      x: Math.round(rectX), y: Math.round(rectY),
-      w: Math.round(rectW), h: Math.round(rectH)
-    };
-  }
-
   async function runAutoOcr(){
     scanline.classList.add('active');
     setStatus('Lecture du nom de la carte (OCR)…', true);
@@ -601,30 +495,20 @@
     try{
       if(!ocrWorker){ await initOcr(); }
 
-      // Tier 1: auto-detect the actual name line by finding the tallest,
-      // wide-enough text band near the top of the card (see detectNameBandRect).
-      // Tier 2: the fixed band calibrated from real photos, as a safety net.
-      // Tier 3: a taller/wider fallback band for edge cases.
-      let result = { raw:'', cleaned:'', letterCount: 0 };
-      const autoRect = capturedCardRect ? detectNameBandRect(capturedCardRect.x, capturedCardRect.y, capturedCardRect.w, capturedCardRect.h) : null;
-
-      if(autoRect){
-        result = await ocrOnRect(autoRect.x, autoRect.y, autoRect.w, autoRect.h, 'stretch');
-        if(result.letterCount < 3){
-          const rb = await ocrOnRect(autoRect.x, autoRect.y, autoRect.w, autoRect.h, 'binary');
-          if(rb.letterCount > result.letterCount) result = rb;
-        }
-      }
+      // Calibrated directly from your 5 real card photos: the name sits at
+      // ~24.5-30% down the card, spanning roughly 24-76% of its width.
+      // Fallback: a taller/wider band for edge cases (long titles, Trainer cards).
+      let result = await tryOcrOnBand(0.245, 0.055, 0.24, 'stretch');
       if(result.letterCount < 3){
-        const r2 = await tryOcrOnBand(0.245, 0.055, 0.24, 'stretch');
+        const r2 = await tryOcrOnBand(0.245, 0.055, 0.24, 'binary');
         if(r2.letterCount > result.letterCount) result = r2;
       }
       if(result.letterCount < 3){
-        const r3 = await tryOcrOnBand(0.245, 0.055, 0.24, 'binary');
+        const r3 = await tryOcrOnBand(0.19, 0.16, 0.07, 'stretch');
         if(r3.letterCount > result.letterCount) result = r3;
       }
       if(result.letterCount < 3){
-        const r4 = await tryOcrOnBand(0.19, 0.16, 0.07, 'stretch');
+        const r4 = await tryOcrOnBand(0.19, 0.16, 0.07, 'binary');
         if(r4.letterCount > result.letterCount) result = r4;
       }
 
