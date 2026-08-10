@@ -81,7 +81,7 @@
     pointer-events:none;
   }
   .name-guide{
-    position:absolute; top:12%; height:13%; left:11%; right:11%;
+    position:absolute; top:21%; height:10%; left:22%; right:22%;
     border: 2px solid var(--gold);
     border-radius:8px;
     background: rgba(251,191,36,0.08);
@@ -490,21 +490,22 @@
     try{
       if(!ocrWorker){ await initOcr(); }
 
-      // Try the guided name band first with robust contrast stretch, then the
-      // same band with pure black/white (Otsu) binarization — this second mode
-      // is what rescues text under glare/reflections (toploaders, holo foil).
-      // A wider fallback band is tried last in case the name sat outside the guide.
-      let result = await tryOcrOnBand(0.12, 0.13, 0.11, 'stretch');
+      // Primary pass: exactly the region shown by the yellow "Nom ici" guide,
+      // calibrated from 5 real card photos (name band sits ~21-31% down, and
+      // ~22-78% across — narrow enough to exclude the evolution badge / PV number
+      // that were polluting the OCR text before). Fallback: taller + wider band
+      // for edge cases (very long titles, Trainer-card layouts without an icon).
+      let result = await tryOcrOnBand(0.21, 0.10, 0.22, 'stretch');
       if(result.letterCount < 3){
-        const r2 = await tryOcrOnBand(0.12, 0.13, 0.11, 'binary');
+        const r2 = await tryOcrOnBand(0.21, 0.10, 0.22, 'binary');
         if(r2.letterCount > result.letterCount) result = r2;
       }
       if(result.letterCount < 3){
-        const r3 = await tryOcrOnBand(0.06, 0.24, 0.06, 'stretch');
+        const r3 = await tryOcrOnBand(0.19, 0.16, 0.07, 'stretch');
         if(r3.letterCount > result.letterCount) result = r3;
       }
       if(result.letterCount < 3){
-        const r4 = await tryOcrOnBand(0.06, 0.24, 0.06, 'binary');
+        const r4 = await tryOcrOnBand(0.19, 0.16, 0.07, 'binary');
         if(r4.letterCount > result.letterCount) result = r4;
       }
 
