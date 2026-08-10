@@ -392,7 +392,12 @@
     const fw = Math.round(w * 0.84), fh = Math.round(h * 0.84);
     capturedCardHash = imageDataToHash(cropToImageData(canvas, fx, fy, fw, fh));
 
-    await runAutoOcr();
+    // TEMPORARY (test mode): OCR is disabled — tape le nom manuellement ci-dessous,
+    // le classement des résultats se fera uniquement par ressemblance visuelle
+    // avec cette photo. Pour réactiver la lecture automatique du nom, remets
+    // "await runAutoOcr();" à la place de la ligne ci-dessous.
+    setStatus('📷 Carte capturée. Tape le nom ci-dessous pour tester le classement par image.', false);
+    searchInput.focus();
   };
 
   // ---------- PREPROCESS + OCR ----------
