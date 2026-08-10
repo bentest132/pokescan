@@ -89,6 +89,15 @@
   .scanline.active{ animation: scan 1.4s linear infinite; opacity:1; }
   @keyframes scan{ 0%{ top:6%; } 100%{ top:94%; } }
 
+  .debug-rect{
+    position:absolute; border:2px solid #FF3B30; background: rgba(255,59,48,0.12);
+    pointer-events:none; border-radius:4px;
+  }
+  .debug-rect .dtag{
+    position:absolute; top:-19px; left:0; font-size:10px; font-weight:800;
+    color:#fff; background:#FF3B30; padding:2px 6px; border-radius:5px; white-space:nowrap;
+  }
+
   .controls{display:flex; gap:10px; margin-top:12px;}
   button{
     font-family:inherit; font-weight:700; font-size:14.5px;
@@ -235,6 +244,7 @@
       <img id="captured" class="captured hidden">
       <div class="frame-guide hidden" id="frameGuide"></div>
       <div class="scanline" id="scanline"></div>
+      <div class="debug-rect hidden" id="debugRect"><span class="dtag">Zone lue</span></div>
     </div>
 
     <div class="controls">
@@ -284,7 +294,7 @@
   const $ = (id) => document.getElementById(id);
   const video = $('video'), canvas = $('canvas'), captured = $('captured'), workCanvas = $('workCanvas');
   const hashCanvas = $('hashCanvas');
-  const placeholder = $('placeholder'), frameGuide = $('frameGuide'), scanline = $('scanline');
+  const placeholder = $('placeholder'), frameGuide = $('frameGuide'), scanline = $('scanline'), debugRect = $('debugRect');
   const btnCamera = $('btnCamera'), btnCapture = $('btnCapture');
   const statusEl = $('status'), ocrDebug = $('ocrDebug');
   const resultsCard = $('resultsCard'), resultsEl = $('results'), resultsLabel = $('resultsLabel');
@@ -324,6 +334,14 @@
   }
   initOcr();
 
+  function showDebugRect(pos, hp, leftPct){
+    debugRect.style.top = (pos*100) + '%';
+    debugRect.style.height = (hp*100) + '%';
+    debugRect.style.left = (leftPct*100) + '%';
+    debugRect.style.right = (leftPct*100) + '%';
+    debugRect.classList.remove('hidden');
+  }
+
   // ---------- CAMERA ----------
   btnCamera.onclick = async () => {
     if(stream){ stopCamera(); return; }
@@ -337,6 +355,7 @@
       await video.play();
       placeholder.classList.add('hidden');
       captured.classList.add('hidden');
+      debugRect.classList.add('hidden');
       video.classList.remove('hidden');
       frameGuide.classList.remove('hidden');
       btnCamera.textContent = '⨯ Fermer';
@@ -375,6 +394,12 @@
     const fx = Math.round(w * 0.08), fy = Math.round(h * 0.08);
     const fw = Math.round(w * 0.84), fh = Math.round(h * 0.84);
     capturedCardHash = imageDataToHash(cropToImageData(canvas, fx, fy, fw, fh));
+
+    // Debug: show exactly where the primary OCR band will read. The resolution
+    // shown after OCR completes tells us if the camera returned a landscape
+    // buffer despite displaying as portrait — that alone would break every
+    // percentage-based crop above.
+    showDebugRect(0.245, 0.055, 0.24);
 
     await runAutoOcr();
   };
@@ -489,7 +514,7 @@
   async function runAutoOcr(){
     scanline.classList.add('active');
     setStatus('Lecture du nom de la carte (OCR)…', true);
-    setDebug('');
+    const resDiag = `[${canvas.width}×${canvas.height}px] `;
     btnCapture.disabled = true;
 
     try{
@@ -515,14 +540,14 @@
       scanline.classList.remove('active');
 
       if(result.letterCount >= 3){
-        setDebug(result.cleaned);
+        setDebug(resDiag + result.cleaned);
         const words = result.cleaned.split(/\s+/);
         const candidate = words.length > 6 ? words.slice(0,6).join(' ') : result.cleaned;
         setStatus(`Recherche de "${candidate}"…`, true);
         searchInput.value = candidate;
         await runSearch(candidate);
       } else {
-        setDebug(result.raw || '(rien de lisible)');
+        setDebug(resDiag + (result.raw || '(rien de lisible)'));
         setStatus("Texte peu clair sur cette photo. Réessaie avec plus de lumière, bien à plat, ou tape le nom manuellement.", false);
       }
     }catch(err){
